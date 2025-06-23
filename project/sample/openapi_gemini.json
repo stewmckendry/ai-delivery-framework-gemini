@@ -1,0 +1,325 @@
+{
+  "paths": {
+    "/git/commit": {
+      "post": {
+        "operationId": "commitChanges",
+        "summary": "Commit changes to a GitHub repository",
+        "tags": [
+          "Git"
+        ],
+        "x-gpt-action": {
+          "name": "Commit Changes",
+          "instructions": "Use this to commit changes to a GitHub repository. Provide `repo_name`, `branch`, and `message`. Optionally include `paths` to specify files to commit.",
+          "summary_keywords": [
+            "commit",
+            "changes",
+            "git"
+          ]
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "repo_name",
+                  "message"
+                ],
+                "properties": {
+                  "repo_name": {
+                    "type": "string",
+                    "description": "GitHub repository name (e.g., nhl-predictor)"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Git branch to commit to (default is 'main')"
+                  },
+                  "message": {
+                    "type": "string",
+                    "description": "Commit message"
+                  },
+                  "paths": {
+                    "type": [
+                      "array",
+                      {
+                        "$ref": "#/components/schemas/FilePath"
+                      }
+                    ],
+                    "$ref": "#/components/schemas/FilePath"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/CommitResponse"
+          }
+        }
+      }
+    },
+    "/sandbox/init": {
+      "post": {
+        "operationId": "initSandbox",
+        "summary": "Initialize or reuse a sandbox branch and optionally scaffold a project",
+        "tags": [
+          "Sandbox",
+          "Project"
+        ],
+        "x-gpt-action": {
+          "name": "Initialize Sandbox or Project",
+          "instructions": "Use this tool to initialize a sandbox workspace. Start with `mode = branch` to create or reuse a branch. Then, optionally call with `mode = project` to scaffold memory and task files into that branch.",
+          "summary_keywords": [
+            "sandbox",
+            "branch",
+            "init",
+            "project",
+            "token",
+            "workspace"
+          ]
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "repo_name",
+                  "mode"
+                ],
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "branch",
+                      "project"
+                    ],
+                    "description": "Whether to initialize a branch or scaffold a project"
+                  },
+                  "repo_name": {
+                    "type": "string",
+                    "description": "GitHub repo name (e.g., nhl-predictor)"
+                  },
+                  "reuse_token": {
+                    "type": "string",
+                    "description": "Optional secure token to reconnect to an existing branch (branch mode only)"
+                  },
+                  "force_new": {
+                    "type": "boolean",
+                    "description": "If true, ignores reuse_token and forces creation of a new branch"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Git branch to initialize the project into (required for mode = project)"
+                  },
+                  "project_name": {
+                    "type": "string",
+                    "description": "Name of the user's project (required for mode = project)"
+                  },
+                  "project_description": {
+                    "type": "string",
+                    "description": "Description of what the project is and what it aims to do (required for mode = project)"
+                  }
+                }
+              },
+              "examples": {
+                "create_branch": {
+                  "summary": "Start a new sandbox branch",
+                  "value": {
+                    "mode": "branch",
+                    "repo_name": "nhl-predictor"
+                  }
+                },
+                "reuse_branch": {
+                  "summary": "Reuse an existing sandbox branch with a token",
+                  "value": {
+                    "mode": "branch",
+                    "repo_name": "nhl-predictor",
+                    "reuse_token": "c2FuZGJveC1lbWVyYWxkLWZveA=="
+                  }
+                },
+                "init_project": {
+                  "summary": "Scaffold project files into a given branch",
+                  "value": {
+                    "mode": "project",
+                    "repo_name": "nhl-predictor",
+                    "branch": "sandbox-emerald-fox",
+                    "project_name": "Smart NHL Predictor",
+                    "project_description": "An app that forecasts NHL game outcomes"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Returns a sandbox context or project setup confirmation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "branch": {
+                      "type": "string",
+                      "description": "The branch created or reused"
+                    },
+                    "repo_name": {
+                      "type": "string",
+                      "description": "The GitHub repo name"
+                    },
+                    "reuse_token": {
+                      "type": "string",
+                      "description": "Token for reusing this branch later (returned only for branch mode)"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "User-facing success message"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/system/fetch_files": {
+      "post": {
+        "operationId": "fetchFiles",
+        "summary": "Fetch one or more files from a GitHub repo",
+        "tags": [
+          "System",
+          "Files"
+        ],
+        "x-gpt-action": {
+          "name": "Fetch Files from Repo",
+          "instructions": "Use this to retrieve one or more files. Set `mode` to `single` or `batch`. Provide `path` for single or `paths` array for batch.",
+          "summary_keywords": [
+            "fetch",
+            "file",
+            "github",
+            "repo"
+          ]
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "repo_name",
+                  "mode"
+                ],
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "single",
+                      "batch"
+                    ],
+                    "description": "Whether to fetch a single file or a list"
+                  },
+                  "repo_name": {
+                    "type": "string",
+                    "description": "GitHub repo name (e.g., ai-delivery-framework)"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Git branch to fetch from (default is 'main')"
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Path to a single file (required for mode=single)"
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "List of file paths (required for mode=batch)"
+                  }
+                }
+              },
+              "examples": {
+                "single": {
+                  "summary": "Get a single file",
+                  "value": {
+                    "mode": "single",
+                    "repo_name": "ai-delivery-framework",
+                    "branch": "sandbox-emerald-owl",
+                    "path": "framework/prompt_template.md"
+                  }
+                },
+                "batch": {
+                  "summary": "Fetch multiple files",
+                  "value": {
+                    "mode": "batch",
+                    "repo_name": "ai-delivery-framework",
+                    "branch": "sandbox-emerald-owl",
+                    "paths": [
+                      "project/task.yaml",
+                      "project/memory.yaml"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Returned file content(s)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "files": {
+                      "type": "object",
+                      "description": "Mapping of file paths to content",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "openapi": "3.1.0",
+  "info": {
+    "title": "GitHub File Proxy + Promote Patch Tool",
+    "version": "1.2.0",
+    "description": "Fetch GitHub repo files and generate patch metadata for AI-native delivery."
+  },
+  "servers": [
+    {
+      "url": "https://ai-delivery-framework-production.up.railway.app",
+      "description": "Production server"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {}
+  }
+}
