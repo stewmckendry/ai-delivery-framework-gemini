@@ -1,0 +1,59 @@
+/* Basic styling for the chat application */
+html, body {
+    height: 100%;
+    margin: 0;
+    font-family: sans-serif;
+    display: flex;
+    flex-direction: column;
+}
+
+#chat-window {
+    flex-grow: 1;
+    border: 1px solid #ccc;
+    margin: 10px;
+    padding: 10px;
+    overflow-y: auto;
+    background-color: #f9f9f9;
+}
+
+#user-input {
+    border: 1px solid #ccc;
+    padding: 10px;
+    margin: 10px;
+    flex-shrink: 0; /* Prevent input from shrinking too much */
+}
+
+#send-button {
+    padding: 10px 15px;
+    margin: 10px;
+    margin-left: 0; /* Align with input field */
+    background-color: #007bff;
+    color: white;
+    border: none;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+#send-button:hover {
+    background-color: #0056b3;
+}
+
+/* Simple message styling */
+.message {
+    padding: 5px;
+    margin-bottom: 5px;
+    border-radius: 5px;
+}
+
+.user-message {
+    background-color: #e1f5fe;
+    text-align: right; /* Align user messages to the right */
+    margin-left: auto; /* Push to the right */
+    max-width: 70%;
+}
+
+.bot-message { /* Placeholder for bot messages */
+    background-color: #f0f0f0;
+    text-align: left;
+    max-width: 70%;
+}
