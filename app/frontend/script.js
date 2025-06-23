@@ -5,7 +5,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // For local development, the backend runs on http://localhost:8000
     // For production, this URL will need to be the deployed backend URL.
-    const backendUrl = 'http://localhost:8000/gemini/chat';
+    // Production backend URL
+    const backendUrl = 'https://ai-delivery-framework-gemini-production.up.railway.app/gemini/chat';
     // Example production URL: const backendUrl = 'https://your-productpod-backend.yourdomain.com/gemini/chat';
 
     let chatHistory = []; // To store messages {role: "user" | "model", parts: ["text"]}
