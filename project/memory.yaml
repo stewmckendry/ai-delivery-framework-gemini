@@ -11,3 +11,16 @@
   - coordination
   last_updated: '2025-06-24'
   pod_owner: DeliveryPod
+- path: README.md
+  raw_url: https://raw.githubusercontent.com/stewmckendry/ai-delivery-framework-gemini/main/README.md
+  file_type: md
+  description: This file provides an overview of the ai-delivery-framework-gemini
+    repository, detailing its structure, setup instructions, and functionality, including
+    integration with Google Gemini LLM and MCP tools for GitHub automation.
+  tags:
+  - FastAPI
+  - Gemini
+  - MCP
+  - GitHub
+  last_updated: '2025-06-24'
+  pod_owner: DeliveryPod
