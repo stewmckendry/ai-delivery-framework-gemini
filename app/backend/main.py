@@ -60,12 +60,12 @@ mcp_app = FastMCP(
 )
 
 # Register tools from github_tools.py
-mcp_app.tool(name="fetchFiles")(fetch_files_mcp_tool)
-mcp_app.tool(name="listFiles")(list_files_mcp_tool)
-mcp_app.tool(name="searchFilesInRepo")(search_files_in_repo_mcp_tool)
-mcp_app.tool(name="gitCommit")(git_commit_mcp_tool) # This is the multi-file commit tool
-mcp_app.tool(name="previewChanges")(preview_changes_mcp_tool)
-mcp_app.tool(name="sandboxInit")(sandbox_init_mcp_tool)
+mcp_app.tool(name="fetchFiles", description="Fetch content of one or more files from a GitHub repository branch.")(fetch_files_mcp_tool)
+mcp_app.tool(name="listFiles", description="List files or directories within a repository path.")(list_files_mcp_tool)
+mcp_app.tool(name="searchFilesInRepo", description="Search repository code using GitHub search API.")(search_files_in_repo_mcp_tool)
+mcp_app.tool(name="gitCommit", description="Commit multiple files to a branch.")(git_commit_mcp_tool) # This is the multi-file commit tool
+mcp_app.tool(name="previewChanges", description="Generate a unified diff for proposed file changes.")(preview_changes_mcp_tool)
+mcp_app.tool(name="sandboxInit", description="Create or reuse a temporary sandbox repository.")(sandbox_init_mcp_tool)
 
 app.mount("/mcp", mcp_app)
 

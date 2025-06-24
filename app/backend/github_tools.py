@@ -76,7 +76,12 @@ def log_sandbox_creation(
 ):
     log_message = (f"User: {product_pod_user_id}, SandboxRepo: {sandbox_repo_fullname}, Type: {sandbox_type}")
     if upstream_repo_fullname: log_message += f", Upstream: {upstream_repo_fullname}"
-    context.info(f"[SandboxTracking] Record creation: {log_message}")
+    context.log_event("sandbox_created", {
+        "user_id": product_pod_user_id,
+        "sandbox_repo": sandbox_repo_fullname,
+        "type": sandbox_type,
+        "upstream": upstream_repo_fullname,
+    })
 
 # --- Tool Definitions ---
 
@@ -87,15 +92,27 @@ class FetchFilesInput(BaseModel):
     paths: List[str] = Field(description="List of full file paths to fetch from the repository root.")
 class FetchFilesOutput(BaseModel):
     files: Dict[str, str] = Field(description="Mapping of file paths to content")
+    status: str = Field(description="Operation status: 'success' or 'failure'")
     error: Optional[str] = Field(default=None, description="Error message if fetching failed")
+    error_type: Optional[str] = Field(default=None, description="Optional machine readable error code")
+    summary: Optional[str] = Field(default=None, description="Short summary for LLM response")
 
 def fetch_files_mcp_tool(input: FetchFilesInput, context: Context) -> FetchFilesOutput:
     tool_name = "fetchFiles"
-    context.info(f"[{tool_name}] Called for repo: {input.repo_name}, branch: {input.branch}, paths: {input.paths}")
+    user_id = getattr(getattr(context, "request_context", None), "product_pod_user_id", "unknown")
+    context.log_event("fetch_files_called", {
+        "tool": tool_name,
+        "repo": input.repo_name,
+        "branch": input.branch,
+        "paths": input.paths,
+        "user_id": user_id,
+    })
     user_token = _get_user_token_from_context(context, tool_name)
-    if not user_token: return FetchFilesOutput(files={}, error="User GitHub token not available; authorization required.")
+    if not user_token:
+        return FetchFilesOutput(files={}, status="failure", error="User GitHub token not available; authorization required.")
     repo = get_repo_client(input.repo_name, user_github_token=user_token)
-    if not repo: return FetchFilesOutput(files={}, error=f"Failed to get GitHub repository '{input.repo_name}'.")
+    if not repo:
+        return FetchFilesOutput(files={}, status="failure", error=f"Failed to get GitHub repository '{input.repo_name}'.")
     results: Dict[str, str] = {}; errors: list[str] = []
     for path_item in input.paths:
         try:
@@ -129,7 +146,9 @@ def fetch_files_mcp_tool(input: FetchFilesInput, context: Context) -> FetchFiles
     if errors:
         if not any(k for k,v in results.items() if not v.startswith("ERROR:")): final_error_message = "All files failed: " + "; ".join(errors)
         else: final_error_message = "Some files failed: " + "; ".join(errors)
-    return FetchFilesOutput(files=results, error=final_error_message)
+    status = "failure" if final_error_message else "success"
+    summary = f"Fetched {len(results)} files." if status == "success" else None
+    return FetchFilesOutput(files=results, status=status, error=final_error_message, summary=summary)
 
 # listFiles Tool
 class ListFilesInput(BaseModel):
@@ -138,14 +157,27 @@ class ListFilesInput(BaseModel):
     path: str = Field(default="", description="Directory path (defaults to root).")
 class ListFilesOutput(BaseModel):
     items: List[Dict[str, str]] = Field(description="List of items ('name', 'type', 'path').")
+    status: str = Field(description="Operation status")
     error: Optional[str] = Field(default=None)
+    error_type: Optional[str] = Field(default=None)
+    summary: Optional[str] = Field(default=None)
 
 def list_files_mcp_tool(input: ListFilesInput, context: Context) -> ListFilesOutput:
-    tool_name = "listFiles"; context.info(f"[{tool_name}] Repo: {input.repo_name}, Path: '{input.path}'")
+    tool_name = "listFiles"
+    user_id = getattr(getattr(context, "request_context", None), "product_pod_user_id", "unknown")
+    context.log_event("list_files_called", {
+        "tool": tool_name,
+        "repo": input.repo_name,
+        "branch": input.branch,
+        "path": input.path,
+        "user_id": user_id,
+    })
     user_token = _get_user_token_from_context(context, tool_name)
-    if not user_token: return ListFilesOutput(items=[], error="User GitHub token not available.")
+    if not user_token:
+        return ListFilesOutput(items=[], status="failure", error="User GitHub token not available.")
     repo = get_repo_client(input.repo_name, user_github_token=user_token)
-    if not repo: return ListFilesOutput(items=[], error=f"Failed to get repo '{input.repo_name}'.")
+    if not repo:
+        return ListFilesOutput(items=[], status="failure", error=f"Failed to get repo '{input.repo_name}'.")
     try:
         contents = repo.get_contents(input.path, ref=input.branch)
         items = []
@@ -153,12 +185,13 @@ def list_files_mcp_tool(input: ListFilesInput, context: Context) -> ListFilesOut
             for item in contents: items.append({"name": item.name, "type": item.type, "path": item.path})
         elif contents: # Single item (e.g. file at root if path was "")
             items.append({"name": contents.name,"type": contents.type,"path": contents.path})
-        return ListFilesOutput(items=items)
+        return ListFilesOutput(items=items, status="success", summary=f"Listed {len(items)} items.")
     except GithubException as e:
         err = f"Error listing path '{input.path}': {e.status} - {e.data.get('message', str(e))}"
         if e.status == 404: err = f"Path '{input.path}' not found."
-        return ListFilesOutput(items=[], error=err)
-    except Exception as e: return ListFilesOutput(items=[], error=f"Unexpected error: {str(e)}")
+        return ListFilesOutput(items=[], status="failure", error=err)
+    except Exception as e:
+        return ListFilesOutput(items=[], status="failure", error=f"Unexpected error: {str(e)}")
 
 # searchFilesInRepo Tool
 class SearchFilesInput(BaseModel):
@@ -167,20 +200,34 @@ class SearchFilesInput(BaseModel):
 class SearchFilesOutput(BaseModel):
     results: List[Dict[str, str]] = Field(description="Found files ('name', 'path', 'sha', 'url').")
     total_count: int = Field(description="Total results found by API.")
+    status: str = Field(description="Operation status")
     error: Optional[str] = Field(default=None)
+    error_type: Optional[str] = Field(default=None)
+    summary: Optional[str] = Field(default=None)
 
 def search_files_in_repo_mcp_tool(input: SearchFilesInput, context: Context) -> SearchFilesOutput:
-    tool_name = "searchFilesInRepo"; context.info(f"[{tool_name}] Repo: {input.repo_name}, Query: '{input.query}'")
+    tool_name = "searchFilesInRepo"
+    user_id = getattr(getattr(context, "request_context", None), "product_pod_user_id", "unknown")
+    context.log_event("search_files_called", {
+        "tool": tool_name,
+        "repo": input.repo_name,
+        "query": input.query,
+        "user_id": user_id,
+    })
     user_token = _get_user_token_from_context(context, tool_name)
-    if not user_token: return SearchFilesOutput(results=[],total_count=0,error="User GitHub token not available.")
+    if not user_token:
+        return SearchFilesOutput(results=[], total_count=0, status="failure", error="User GitHub token not available.")
     g_user = get_github_client_for_user(user_token)
-    if not g_user: return SearchFilesOutput(results=[],total_count=0,error="Failed to init GitHub client.")
+    if not g_user:
+        return SearchFilesOutput(results=[], total_count=0, status="failure", error="Failed to init GitHub client.")
     try:
         search_results = g_user.search_code(query=f"repo:{input.repo_name} {input.query}")
         items = [{"name": cf.name,"path": cf.path,"sha": cf.sha,"url": cf.html_url} for i, cf in enumerate(search_results) if i < 30]
-        return SearchFilesOutput(results=items, total_count=search_results.totalCount)
-    except GithubException as e: return SearchFilesOutput(results=[],total_count=0,error=f"GitHub API error: {e.status} - {e.data.get('message', str(e))}")
-    except Exception as e: return SearchFilesOutput(results=[],total_count=0,error=f"Unexpected error: {str(e)}")
+        return SearchFilesOutput(results=items, total_count=search_results.totalCount, status="success", summary=f"Found {len(items)} items.")
+    except GithubException as e:
+        return SearchFilesOutput(results=[], total_count=0, status="failure", error=f"GitHub API error: {e.status} - {e.data.get('message', str(e))}")
+    except Exception as e:
+        return SearchFilesOutput(results=[], total_count=0, status="failure", error=f"Unexpected error: {str(e)}")
 
 # gitCommit Tool (Multi-file)
 class FileCommitData(BaseModel):
@@ -196,13 +243,25 @@ class GitCommitOutput(BaseModel):
     commit_sha: Optional[str] = Field(default=None)
     status: str
     error: Optional[str] = Field(default=None)
+    error_type: Optional[str] = Field(default=None)
+    summary: Optional[str] = Field(default=None)
 
 def git_commit_mcp_tool(input: MultiFileGitCommitInput, context: Context) -> GitCommitOutput:
-    tool_name = "gitCommit"; context.info(f"[{tool_name}] Repo: {input.repo_name}, Branch: {input.branch}, Files: {len(input.files)}")
+    tool_name = "gitCommit"
+    user_id = getattr(getattr(context, "request_context", None), "product_pod_user_id", "unknown")
+    context.log_event("git_commit_called", {
+        "tool": tool_name,
+        "repo": input.repo_name,
+        "branch": input.branch,
+        "file_count": len(input.files),
+        "user_id": user_id,
+    })
     user_token = _get_user_token_from_context(context, tool_name)
-    if not user_token: return GitCommitOutput(status="failure", error="User GitHub token not available.")
+    if not user_token:
+        return GitCommitOutput(status="failure", error="User GitHub token not available.")
     repo = get_repo_client(input.repo_name, user_github_token=user_token)
-    if not repo: return GitCommitOutput(status="failure", error=f"Failed to get repo '{input.repo_name}'.")
+    if not repo:
+        return GitCommitOutput(status="failure", error=f"Failed to get repo '{input.repo_name}'.")
     if not input.files: return GitCommitOutput(status="failure", error="No files for commit.")
     try:
         branch_ref = repo.get_git_ref(f"heads/{input.branch}")
@@ -231,7 +290,7 @@ def git_commit_mcp_tool(input: MultiFileGitCommitInput, context: Context) -> Git
             branch_ref.edit(sha=created_commit.sha)
         else:
             repo.create_git_ref(ref=f"refs/heads/{input.branch}", sha=created_commit.sha)
-        return GitCommitOutput(commit_url=created_commit.html_url, commit_sha=created_commit.sha, status="success")
+        return GitCommitOutput(commit_url=created_commit.html_url, commit_sha=created_commit.sha, status="success", summary="Commit created")
     except GithubException as e:
         return GitCommitOutput(status="failure", error=f"GitHub API error: {e.status} - {e.data.get('message', str(e))}")
     except Exception as e:
@@ -245,15 +304,29 @@ class PreviewChangesInput(BaseModel):
     files: List[FileCommitData] = Field(description="File changes to preview.")
 class PreviewChangesOutput(BaseModel):
     diff_text: Optional[str] = Field(default=None)
+    status: str = Field(description="Operation status")
     error: Optional[str] = Field(default=None)
+    error_type: Optional[str] = Field(default=None)
+    summary: Optional[str] = Field(default=None)
 
 def preview_changes_mcp_tool(input: PreviewChangesInput, context: Context) -> PreviewChangesOutput:
-    tool_name = "previewChanges"; context.info(f"[{tool_name}] Repo: {input.repo_name}, Branch: {input.branch}, Files: {len(input.files)}")
+    tool_name = "previewChanges"
+    user_id = getattr(getattr(context, "request_context", None), "product_pod_user_id", "unknown")
+    context.log_event("preview_changes_called", {
+        "tool": tool_name,
+        "repo": input.repo_name,
+        "branch": input.branch,
+        "file_count": len(input.files),
+        "user_id": user_id,
+    })
     user_token = _get_user_token_from_context(context, tool_name)
-    if not user_token: return PreviewChangesOutput(error="User GitHub token not available.")
+    if not user_token:
+        return PreviewChangesOutput(status="failure", error="User GitHub token not available.")
     repo = get_repo_client(input.repo_name, user_github_token=user_token)
-    if not repo: return PreviewChangesOutput(error=f"Failed to get repo '{input.repo_name}'.")
-    if not input.files: return PreviewChangesOutput(diff_text="No file changes for preview.")
+    if not repo:
+        return PreviewChangesOutput(status="failure", error=f"Failed to get repo '{input.repo_name}'.")
+    if not input.files:
+        return PreviewChangesOutput(status="success", diff_text="No file changes for preview.")
     full_diff_text = []
     for file_data in input.files:
         original_content_lines = []; original_file_exists = True
@@ -268,13 +341,15 @@ def preview_changes_mcp_tool(input: PreviewChangesInput, context: Context) -> Pr
             original_content_lines = original_content.splitlines(keepends=True)
         except GithubException as e:
             if e.status == 404: original_file_exists = False; original_content_lines = []
-            else: return PreviewChangesOutput(error=f"Error fetching original '{file_data.path}': {str(e)}")
+            else:
+                return PreviewChangesOutput(status="failure", error=f"Error fetching original '{file_data.path}': {str(e)}")
         new_content_lines = file_data.content.splitlines(keepends=True)
         diff = difflib.unified_diff(original_content_lines,new_content_lines,fromfile="/dev/null" if not original_file_exists else f"a/{file_data.path}",tofile=f"b/{file_data.path}",lineterm='\n')
         full_diff_text.extend(list(diff))
     if not full_diff_text and any("Error:" in line for line in full_diff_text): pass
-    elif not full_diff_text : return PreviewChangesOutput(diff_text="No textual changes or all files problematic.")
-    return PreviewChangesOutput(diff_text="".join(full_diff_text))
+    elif not full_diff_text:
+        return PreviewChangesOutput(status="success", diff_text="No textual changes or all files problematic.")
+    return PreviewChangesOutput(status="success", diff_text="".join(full_diff_text), summary="Diff generated")
 
 # sandboxInit - Helper for project init (now simplified)
 def run_project_initialization_logic(project_name: str, dest_repo_name_full: str, project_description: str, dest_branch: str, user_token: str, context: Context):
@@ -283,7 +358,12 @@ def run_project_initialization_logic(project_name: str, dest_repo_name_full: str
     if not g_user: raise Exception("GitHub client could not be initialized for project init.")
     project_repo = get_repo_client(dest_repo_name_full, user_github_token=user_token)
     if not project_repo: raise Exception(f"Destination repo '{dest_repo_name_full}' not accessible.")
-    context.info(f"[{tool_name}] Project '{project_name}' setup on branch '{dest_branch}' in repo '{dest_repo_name_full}' is complete (repository starts empty).")
+    context.log_event("project_initialized", {
+        "tool": tool_name,
+        "repo": dest_repo_name_full,
+        "branch": dest_branch,
+        "project": project_name,
+    })
 
 # sandboxInit Tool
 class SandboxInitInput(BaseModel):
@@ -303,19 +383,33 @@ class SandboxInitOutput(BaseModel):
     branch: Optional[str] = Field(default=None)
     reuse_token: Optional[str] = Field(default=None)
     message: str
+    status: str = Field(description="Operation status")
     error: Optional[str] = Field(default=None)
+    error_type: Optional[str] = Field(default=None)
+    summary: Optional[str] = Field(default=None)
     is_fork: Optional[bool] = Field(default=None)
     is_new_repo: Optional[bool] = Field(default=None)
     project_name_initialized: Optional[str] = Field(default=None)
 
 def sandbox_init_mcp_tool(input: SandboxInitInput, context: Context) -> SandboxInitOutput:
-    tool_name = "sandboxInit"; context.info(f"[{tool_name}] Input: {input.model_dump_json(exclude_none=True)}")
+    tool_name = "sandboxInit"
+    user_id = getattr(getattr(context, "request_context", None), "product_pod_user_id", "unknown")
+    context.log_event("sandbox_init_called", {
+        "tool": tool_name,
+        "user_id": user_id,
+        "upstream_repo": input.upstream_repo_name,
+        "target_repo": input.new_sandbox_repo_name or input.direct_target_repo_name,
+        "branch": input.branch_name,
+    })
     user_token = _get_user_token_from_context(context, tool_name)
-    if not user_token: return SandboxInitOutput(message="Init failed", error="User GitHub token not available.")
+    if not user_token:
+        return SandboxInitOutput(status="failure", message="Init failed", error="User GitHub token not available.")
     g_user = get_github_client_for_user(user_token)
-    if not g_user: return SandboxInitOutput(message="Init failed", error="Failed to init GitHub client.")
+    if not g_user:
+        return SandboxInitOutput(status="failure", message="Init failed", error="Failed to init GitHub client.")
     try: authenticated_user = g_user.get_user(); auth_user_login = authenticated_user.login
-    except GithubException as e: return SandboxInitOutput(message="Init failed", error=f"Invalid token or perms: {str(e)}")
+    except GithubException as e:
+        return SandboxInitOutput(status="failure", message="Init failed", error=f"Invalid token or perms: {str(e)}")
 
     target_repo:Optional[Any]=None; final_branch_name:Optional[str]=input.branch_name
     is_fork_flag,is_new_repo_created_flag,is_new_fork_created_flag = False,False,False
@@ -324,7 +418,8 @@ def sandbox_init_mcp_tool(input: SandboxInitInput, context: Context) -> SandboxI
 
     prod_user_id="unknown_user" # Simplified product_pod_user_id retrieval
     if hasattr(context,'request_context') and isinstance(context.request_context,dict): prod_user_id=context.request_context.get("product_pod_user_id",prod_user_id)
-    if prod_user_id=="unknown_user": context.warning(f"[{tool_name}] ProductPod User ID not found.")
+    if prod_user_id=="unknown_user":
+        context.log_event("sandbox_init_missing_user", {"tool": tool_name})
 
     try:
         if input.reuse_token and not input.force_new:
@@ -332,19 +427,24 @@ def sandbox_init_mcp_tool(input: SandboxInitInput, context: Context) -> SandboxI
                 reused_repo_name, reused_branch_name = base64.urlsafe_b64decode(input.reuse_token.encode()).decode().split(":",1)
                 target_repo = get_repo_client(reused_repo_name, user_token)
                 if target_repo: target_repo.get_branch(reused_branch_name); final_branch_name=reused_branch_name
-                else: context.warning(f"[{tool_name}] Failed to get repo from reuse_token.")
+                else:
+                    context.log_event("sandbox_init_reuse_failed", {"tool": tool_name})
                 if target_repo: sandbox_type_msg = f"Reusing {'fork' if target_repo.fork else 'repo'} '{target_repo.full_name}'."
-            except Exception as e: context.warning(f"[{tool_name}] Invalid reuse_token: {e}.")
+            except Exception as e:
+                context.log_event("sandbox_init_invalid_reuse_token", {"tool": tool_name, "error": str(e)})
 
         if not target_repo: # Determine target_repo if not reusing
             if input.direct_target_repo_name:
                 target_repo = get_repo_client(input.direct_target_repo_name, user_token)
-                if not target_repo: return SandboxInitOutput(message="Init failed", error=f"Direct target repo not found.")
-                if auth_user_login and target_repo.owner.login != auth_user_login: context.warning(f"User operating on non-owned direct repo.")
+                if not target_repo:
+                    return SandboxInitOutput(status="failure", message="Init failed", error=f"Direct target repo not found.")
+                if auth_user_login and target_repo.owner.login != auth_user_login:
+                    context.log_event("sandbox_init_non_owner", {"tool": tool_name, "repo": input.direct_target_repo_name})
                 sandbox_type_msg = f"Using direct target repo '{target_repo.full_name}'."
             elif input.upstream_repo_name:
                 orig_repo_for_log = get_repo_client(input.upstream_repo_name, user_token)
-                if not orig_repo_for_log: return SandboxInitOutput(message="Init failed", error=f"Upstream repo not found.")
+                if not orig_repo_for_log:
+                    return SandboxInitOutput(status="failure", message="Init failed", error=f"Upstream repo not found.")
                 if auth_user_login and orig_repo_for_log.owner.login == auth_user_login:
                     target_repo = orig_repo_for_log; sandbox_type_msg = f"Using user's own repo '{target_repo.full_name}'."
                 else: # Fork or use existing
@@ -359,7 +459,8 @@ def sandbox_init_mcp_tool(input: SandboxInitInput, context: Context) -> SandboxI
                     else: # Create fork
                         orig_repo_for_log.create_fork(); is_new_fork_created_flag = True; time.sleep(10) # Allow time for fork
                         target_repo = get_repo_client(expected_fork_name, user_token) # Re-fetch
-                        if not target_repo : return SandboxInitOutput(message="Init failed", error="Fork initiated but not found.")
+                        if not target_repo:
+                            return SandboxInitOutput(status="failure", message="Init failed", error="Fork initiated but not found.")
                     is_fork_flag = True; sandbox_type_msg = f"Using fork '{target_repo.full_name}'."
                     if is_new_fork_created_flag: log_sandbox_creation(context,prod_user_id,target_repo.full_name,"fork",orig_repo_for_log.full_name)
             elif input.new_sandbox_repo_name:
@@ -371,9 +472,11 @@ def sandbox_init_mcp_tool(input: SandboxInitInput, context: Context) -> SandboxI
                         is_new_repo_created_flag = True; log_sandbox_creation(context,prod_user_id,target_repo.full_name,"temp_repo")
                     else: raise
                 sandbox_type_msg = f"Using repo '{target_repo.full_name}'."
-            else: return SandboxInitOutput(message="Init failed", error="Must specify repo source.")
+            else:
+                return SandboxInitOutput(status="failure", message="Init failed", error="Must specify repo source.")
 
-        if not target_repo: return SandboxInitOutput(message="Init failed", error="Target repo not determined.")
+        if not target_repo:
+            return SandboxInitOutput(status="failure", message="Init failed", error="Target repo not determined.")
 
         default_branch = target_repo.get_branch(target_repo.default_branch); base_sha = default_branch.commit.sha
         if not final_branch_name: # Auto-generate
@@ -390,9 +493,12 @@ def sandbox_init_mcp_tool(input: SandboxInitInput, context: Context) -> SandboxI
             proj_init_msg = f"Project '{input.project_name_for_init}' init done. "
 
         reuse_tok = base64.urlsafe_b64encode(f"{target_repo.full_name}:{final_branch_name}".encode()).decode()
-        return SandboxInitOutput(branch=final_branch_name,repo_name=target_repo.full_name,reuse_token=reuse_tok,
+        return SandboxInitOutput(branch=final_branch_name, repo_name=target_repo.full_name, reuse_token=reuse_tok,
             message=f"{sandbox_type_msg} Branch '{final_branch_name}' ready. {proj_init_msg}Reuse: {reuse_tok}",
-            is_fork=is_fork_flag,is_new_repo=is_new_repo_created_flag,
+            status="success",
+            summary="Sandbox initialized",
+            is_fork=is_fork_flag, is_new_repo=is_new_repo_created_flag,
             project_name_initialized=input.project_name_for_init if input.initialize_project_structure else None)
     except Exception as e:
-        traceback.print_exc(); return SandboxInitOutput(message="Init failed", error=str(e))
+        traceback.print_exc();
+        return SandboxInitOutput(status="failure", message="Init failed", error=str(e))
