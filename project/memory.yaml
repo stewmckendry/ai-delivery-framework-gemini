@@ -24,3 +24,16 @@
   - GitHub
   last_updated: '2025-06-24'
   pod_owner: DeliveryPod
+- path: task_guides/MASTER_TASK_LIST.md
+  raw_url: https://raw.githubusercontent.com/stewmckendry/ai-delivery-framework-gemini/main/task_guides/MASTER_TASK_LIST.md
+  file_type: md
+  description: A comprehensive backlog detailing tasks for enhancing the ProductPod
+    prototype, focusing on frontend improvements, authentication flows, backend testing,
+    and deployment processes.
+  tags:
+  - enhancements
+  - backlog
+  - workflow
+  - deployment
+  last_updated: '2025-06-24'
+  pod_owner: DeliveryPod
