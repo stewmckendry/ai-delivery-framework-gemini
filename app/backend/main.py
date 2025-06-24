@@ -69,12 +69,14 @@ mcp_app.tool(name="sandboxInit")(sandbox_init_mcp_tool)
 
 app.mount("/mcp", mcp_app)
 
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "*")
+allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
 if not GEMINI_API_KEY:
@@ -82,7 +84,7 @@ if not GEMINI_API_KEY:
 
 
 # Utility for Gemini function call argument conversion (remains in main.py as it's Gemini specific)
-from typing import Any # Ensure Any is imported for the function signature
+from typing import Any, List  # Ensure Any and List are imported for the function signature
 def _recursive_convert_gemini_struct_to_dict(value: Any) -> Any:
     if isinstance(value, ProtoStruct):
          return {key: _recursive_convert_gemini_struct_to_dict(val) for key, val in value.fields.items()}
@@ -160,10 +162,16 @@ async def startup_event_mcp():
 async def gemini_chat_proxy_mcp(request: Request): 
     if not GEMINI_API_KEY: raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured on the server.")
 
-    # THIS IS A CRITICAL PLACEHOLDER - Replace with actual user authentication and token retrieval
-    USER_GITHUB_TOKEN_FOR_TESTING = os.getenv("USER_GITHUB_TOKEN_FOR_TESTING")
-    PRODUCT_POD_USER_ID_FOR_TESTING = os.getenv("PRODUCT_POD_USER_ID_FOR_TESTING", "test_user_main_py")
-    # END CRITICAL PLACEHOLDER
+    # Extract GitHub token from request headers
+    github_token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        github_token = auth_header.split(" ", 1)[1]
+    elif "X-GitHub-Token" in request.headers:
+        github_token = request.headers["X-GitHub-Token"]
+    product_user_id = request.headers.get("X-ProductPod-User", "anonymous")
+    if not github_token:
+        raise HTTPException(status_code=401, detail="GitHub token required")
 
     try:
         request_data = await request.json()
@@ -213,11 +221,9 @@ async def gemini_chat_proxy_mcp(request: Request):
                             current_request_context_dict = {
                                 "client_id": "gemini_chat_proxy",
                                 "request_id": RequestId.new(),
-                                "user_github_token": USER_GITHUB_TOKEN_FOR_TESTING, # MUST BE REPLACED by actual user token
-                                "product_pod_user_id": PRODUCT_POD_USER_ID_FOR_TESTING # MUST BE REPLACED
+                                "user_github_token": github_token,
+                                "product_pod_user_id": product_user_id
                             }
-                            if not USER_GITHUB_TOKEN_FOR_TESTING:
-                                print(f"WARNING: USER_GITHUB_TOKEN_FOR_TESTING not set. Tool '{tool_name}' might fail if it needs GitHub auth.")
 
                             fake_req_ctx = RequestContext(**current_request_context_dict)
                             # Ensure mcp_app._tool_manager is valid if used, or pass None

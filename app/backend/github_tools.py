@@ -217,14 +217,26 @@ def git_commit_mcp_tool(input: MultiFileGitCommitInput, context: Context) -> Git
     for file_data in input.files:
         blob = repo.create_git_blob(content=file_data.content, encoding="utf-8")
         tree_elements.append({"path": file_data.path, "mode": "100644", "type": "blob", "sha": blob.sha})
-    new_tree_obj = repo.create_git_tree(tree_elements, base_tree=base_tree_sha) if base_tree_sha else repo.create_git_tree(tree_elements)
-    parents = [repo.get_git_commit(parent_commit_sha)] if parent_commit_sha else []
-    created_commit = repo.create_git_commit(message=input.message, tree=new_tree_obj, parents=parents)
-    if parent_commit_sha: branch_ref.edit(sha=created_commit.sha)
-    else: repo.create_git_ref(ref=f"refs/heads/{input.branch}", sha=created_commit.sha)
-    return GitCommitOutput(commit_url=created_commit.html_url, commit_sha=created_commit.sha, status="success")
-    except GithubException as e: return GitCommitOutput(status="failure", error=f"GitHub API error: {e.status} - {e.data.get('message', str(e))}")
-    except Exception as e: traceback.print_exc(); return GitCommitOutput(status="failure", error=f"Unexpected error: {str(e)}")
+    try:
+        new_tree_obj = (
+            repo.create_git_tree(tree_elements, base_tree=base_tree_sha)
+            if base_tree_sha
+            else repo.create_git_tree(tree_elements)
+        )
+        parents = [repo.get_git_commit(parent_commit_sha)] if parent_commit_sha else []
+        created_commit = repo.create_git_commit(
+            message=input.message, tree=new_tree_obj, parents=parents
+        )
+        if parent_commit_sha:
+            branch_ref.edit(sha=created_commit.sha)
+        else:
+            repo.create_git_ref(ref=f"refs/heads/{input.branch}", sha=created_commit.sha)
+        return GitCommitOutput(commit_url=created_commit.html_url, commit_sha=created_commit.sha, status="success")
+    except GithubException as e:
+        return GitCommitOutput(status="failure", error=f"GitHub API error: {e.status} - {e.data.get('message', str(e))}")
+    except Exception as e:
+        traceback.print_exc()
+        return GitCommitOutput(status="failure", error=f"Unexpected error: {str(e)}")
 
 # previewChanges Tool
 class PreviewChangesInput(BaseModel):
@@ -337,8 +349,12 @@ def sandbox_init_mcp_tool(input: SandboxInitInput, context: Context) -> SandboxI
                     target_repo = orig_repo_for_log; sandbox_type_msg = f"Using user's own repo '{target_repo.full_name}'."
                 else: # Fork or use existing
                     expected_fork_name = f"{auth_user_login}/{orig_repo_for_log.name}"
-                    try: fork_repo = g_user.get_repo(expected_fork_name)
-                    except GithubException as e: if e.status != 404: raise; fork_repo = None
+                    try:
+                        fork_repo = g_user.get_repo(expected_fork_name)
+                    except GithubException as e:
+                        if e.status != 404:
+                            raise
+                        fork_repo = None
                     if fork_repo and fork_repo.fork and fork_repo.parent and fork_repo.parent.full_name == orig_repo_for_log.full_name: target_repo = fork_repo
                     else: # Create fork
                         orig_repo_for_log.create_fork(); is_new_fork_created_flag = True; time.sleep(10) # Allow time for fork
