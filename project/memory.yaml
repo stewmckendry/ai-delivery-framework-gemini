@@ -1,0 +1,13 @@
+- path: AGENTS.md
+  raw_url: https://raw.githubusercontent.com/stewmckendry/ai-delivery-framework-gemini/main/AGENTS.md
+  file_type: md
+  description: Guide for Codex Agents in the ProductPod, detailing repo structure,
+    naming conventions, agent responsibilities, and coordination practices for AI
+    delivery.
+  tags:
+  - guide
+  - structure
+  - practices
+  - coordination
+  last_updated: '2025-06-24'
+  pod_owner: DeliveryPod
