@@ -91,3 +91,20 @@ h1 {
 #send-button:hover {
     background-color: #0056b3;
 }
+
+.tool-table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 5px;
+}
+
+.tool-table th,
+.tool-table td {
+    border: 1px solid #ccc;
+    padding: 4px 8px;
+    text-align: left;
+}
+
+.tool-table th {
+    background-color: #f0f0f0;
+}

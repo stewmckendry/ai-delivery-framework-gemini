@@ -1,3 +1,70 @@
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function formatFunctionResponse(funcResp) {
+    if (!funcResp) return '';
+    const { name, response } = funcResp;
+
+    if (name === 'listFiles' && response && Array.isArray(response.items)) {
+        const rows = response.items.map(
+            item => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.type)}</td><td>${escapeHtml(item.path)}</td></tr>`
+        ).join('');
+        return `<table class="tool-table"><thead><tr><th>Name</th><th>Type</th><th>Path</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    if (name === 'searchFilesInRepo' && response && Array.isArray(response.results)) {
+        const rows = response.results.map(
+            r => `<tr><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.path)}</td><td>${escapeHtml(r.sha)}</td><td><a href="${escapeHtml(r.url)}" target="_blank">${escapeHtml(r.url)}</a></td></tr>`
+        ).join('');
+        return `<table class="tool-table"><thead><tr><th>Name</th><th>Path</th><th>SHA</th><th>URL</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    if (response) {
+        return `<pre>${escapeHtml(JSON.stringify(response, null, 2))}</pre>`;
+    }
+    return '';
+}
+
+function appendMessage(content, sender, isHtml = false) {
+    if (typeof document === 'undefined') return;
+    const messageDiv = document.createElement('div');
+    messageDiv.classList.add('message');
+    messageDiv.classList.add(sender === 'user' ? 'user-message' : 'model-message');
+    if (isHtml) {
+        messageDiv.innerHTML = content;
+    } else {
+        messageDiv.textContent = content;
+        messageDiv.innerHTML = messageDiv.innerHTML.replace(/\n/g, '<br>');
+    }
+    const chatWindow = document.getElementById('chat-window');
+    chatWindow.appendChild(messageDiv);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+function processChatPart(part) {
+    if (!part || part.type !== 'chat' || !Array.isArray(part.parts)) return;
+    const sender = part.role === 'user' ? 'user' : 'model';
+    let rendered = false;
+    for (const sub of part.parts) {
+        if (sub.type === 'text' && sub.text) {
+            appendMessage(sub.text, sender);
+            rendered = true;
+        } else if (sub.function_response) {
+            const html = formatFunctionResponse(sub.function_response);
+            appendMessage(html || JSON.stringify(sub.function_response), sender, true);
+            rendered = true;
+        }
+    }
+    if (rendered) mcpChatHistoryParts.push(part);
+}
+
+let mcpChatHistoryParts = [];
+
+if (typeof document !== 'undefined') {
 document.addEventListener('DOMContentLoaded', () => {
     const chatWindow = document.getElementById('chat-window');
     const userInput = document.getElementById('user-input');
@@ -10,18 +77,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // const backendUrl = 'https://ai-delivery-framework-gemini-production.up.railway.app/gemini/chat';
 
 
-    // chatHistory will store ModelContext Protocol (MCP) compliant ChatContextPart objects.
-    // Example: { type: "chat", role: "user", parts: [{ type: "text", text: "Hello" }] }
-    let mcpChatHistoryParts = [];
 
-    function appendMessage(text, sender) {
-        const messageDiv = document.createElement('div');
-        messageDiv.classList.add('message');
-        messageDiv.classList.add(sender === 'user' ? 'user-message' : 'model-message');
-        messageDiv.innerHTML = text.replace(/\n/g, '<br>'); // Basic Markdown-like rendering for newlines
-        chatWindow.appendChild(messageDiv);
-        chatWindow.scrollTop = chatWindow.scrollHeight; // Auto-scroll to bottom
-    }
+
 
     async function sendMessage() {
         const messageText = userInput.value.trim();
@@ -92,25 +149,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const responseData = await response.json(); // This should be a ModelContext object
             console.log("Received ModelContext from backend:", JSON.stringify(responseData, null, 2));
 
-            // Extract the model's response from the ModelContext
-            // Assuming the backend returns a ModelContext with the model's latest ChatContextPart
-            if (responseData.parts && responseData.parts.length > 0) {
-                const lastPart = responseData.parts[responseData.parts.length - 1]; // Get the last part (should be model's response)
-
-                if (lastPart.type === "chat" && lastPart.role === "model" && lastPart.parts && lastPart.parts.length > 0) {
-                    const textSubPart = lastPart.parts.find(p => p.type === "text");
-                    if (textSubPart && textSubPart.text) {
-                        const modelResponseText = textSubPart.text;
-                        appendMessage(modelResponseText, 'model');
-                        // Add the model's valid ChatContextPart to history
-                        mcpChatHistoryParts.push(lastPart);
-                    } else {
-                        appendMessage("Model response part did not contain text.", 'model');
-                    }
-                } else {
-                    appendMessage("Received an unexpected ModelContext structure from the backend.", 'model');
-                    console.warn("Unexpected ModelContext structure:", lastPart);
-                }
+            if (responseData.parts && Array.isArray(responseData.parts) && responseData.parts.length > 0) {
+                responseData.parts.forEach(processChatPart);
             } else {
                 appendMessage("Received an empty or invalid ModelContext from the backend.", 'model');
             }
@@ -142,3 +182,8 @@ document.addEventListener('DOMContentLoaded', () => {
     //     parts: [{ type: "text", text: initialGreetingText }]
     // });
 });
+}
+
+if (typeof module !== 'undefined') {
+    module.exports = { formatFunctionResponse };
+}
