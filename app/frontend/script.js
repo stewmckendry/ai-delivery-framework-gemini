@@ -40,8 +40,9 @@ document.addEventListener('DOMContentLoaded', () => {
         userInput.value = ''; // Clear input field
 
         // Show a thinking indicator
-        appendMessage("<i>Thinking...</i>", 'model');
-        const thinkingMessageElement = chatWindow.lastChild;
+       appendMessage("<i>Thinking...</i>", 'model');
+       const thinkingMessageElement = chatWindow.lastChild;
+        sendButton.disabled = true;
 
         try {
             // Construct the ModelContext object for the request
@@ -60,9 +61,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify(modelContextRequest),
             });
 
-            if (thinkingMessageElement && thinkingMessageElement.parentNode === chatWindow) {
-                chatWindow.removeChild(thinkingMessageElement); // Remove thinking message
-            }
+           if (thinkingMessageElement && thinkingMessageElement.parentNode === chatWindow) {
+               chatWindow.removeChild(thinkingMessageElement); // Remove thinking message
+           }
+            sendButton.disabled = false;
 
             if (!response.ok) {
                 let errorDetail = "Unknown error occurred";
@@ -119,6 +121,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (thinkingMsg) {
                 chatWindow.removeChild(thinkingMsg);
             }
+            sendButton.disabled = false;
             appendMessage(`Network or application error: ${error.message}`, 'model');
         }
     }
