@@ -49,3 +49,15 @@
   - diff
   last_updated: '2025-06-24'
   pod_owner: DeliveryPod
+- path: task_guides/task_002_tool_output_ui.md
+  raw_url: https://raw.githubusercontent.com/stewmckendry/ai-delivery-framework-gemini/main/task_guides/task_002_tool_output_ui.md
+  file_type: md
+  description: Guide for rendering structured tool outputs directly in the frontend
+    chat window, including parsing and formatting responses.
+  tags:
+  - frontend
+  - rendering
+  - tool
+  - UI
+  last_updated: '2025-06-24'
+  pod_owner: DeliveryPod
