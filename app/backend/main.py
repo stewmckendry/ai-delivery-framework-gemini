@@ -50,25 +50,38 @@ app.add_middleware(
 if not GEMINI_API_KEY:
     print("CRITICAL ERROR: GEMINI_API_KEY environment variable not set.")
 
-async def _execute_actual_github_api_call(api_path: str, tool_args: Dict[str, Any], tool_name: str) -> Dict[str, Any]:
-    api_url = f"{GITHUB_API_BASE_URL}{api_path}"
-    headers = {"Content-Type": "application/json"}
-    async with httpx.AsyncClient() as client:
-        try:
-            print(f"[_execute_actual_github_api_call] Executing API call for tool '{tool_name}' with args: {tool_args} at {api_url}")
-            response = await client.post(api_url, json=tool_args, headers=headers, timeout=30.0)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            return {"error": f"Error calling GitHub API for {tool_name}: {e.response.status_code}", "details": e.response.text}
-        except httpx.RequestError as e:
-            return {"error": f"Request error calling GitHub API for {tool_name}: {str(e)}"}
-        except json.JSONDecodeError:
-            resp_text = response.text if 'response' in locals() else 'No response object'
-            return {"error": f"Failed to decode JSON response from GitHub API for {tool_name}"}
+# PyGithub and other necessary imports for direct GitHub operations
+from github import Github, GithubException
+import base64
+import random # for sandboxInit
+
+# Initialize GitHub client
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+if not GITHUB_TOKEN:
+    print("CRITICAL ERROR: GITHUB_TOKEN environment variable not set.")
+    # Potentially raise an error or exit if GITHUB_TOKEN is essential for startup
+    # For now, we'll let it proceed but tools will fail if GITHUB_TOKEN is None.
+    g = None
+else:
+    g = Github(GITHUB_TOKEN)
+
+# Helper to get a repo object - adapting from project/sample/main.py
+def get_repo_client(repo_name_full: str) -> Optional[Any]: # Actually returns github.Repository.Repository
+    if not g:
+        print("Error: GitHub client not initialized (GITHUB_TOKEN missing).")
+        return None
+    try:
+        # Assuming repo_name_full is in "owner/repo" format
+        return g.get_repo(repo_name_full)
+    except GithubException as e:
+        print(f"Error getting repo {repo_name_full}: {e}")
+        return None
 
 class FetchFilesInput(BaseModel):
-    repo_name: str = Field(description="GitHub repository name (e.g., 'owner/repo')")
+    # repo_name in "owner/repo" format as per Pydantic model,
+    # but original sample code used "ai-delivery-framework" and then constructed owner/repo.
+    # Will need to ensure consistency or adapt. For now, assume "owner/repo" is passed.
+    repo_name: str = Field(description="GitHub repository name, including owner (e.g., 'owner/repo')")
     branch: Optional[str] = Field(default="main", description="Git branch to fetch from (default is 'main')")
     paths: List[str] = Field(description="List of full file paths to fetch from the repository root.")
 
@@ -76,42 +89,121 @@ class FetchFilesOutput(BaseModel):
     files: Dict[str, str] = Field(description="Mapping of file paths to content")
     error: Optional[str] = Field(default=None, description="Error message if fetching failed")
 
-@mcp_app.tool(name="fetchFiles") 
-async def fetch_files_mcp_tool(input: FetchFilesInput, context: Context) -> FetchFilesOutput: 
-    """Fetches one or more files from a specific GitHub repository and branch."""
-    await context.info(f"[fetch_files_mcp_tool] Called for repo: {input.repo_name} paths: {input.paths}")
-    api_args = {"repo_name": input.repo_name, "branch": input.branch, "paths": input.paths, "mode": "batch"}
-    tool_output_content = await _execute_actual_github_api_call("/system/fetch_files", api_args, "fetchFiles")
-    if "error" in tool_output_content:
-        await context.error(f"[fetch_files_mcp_tool] Error: {tool_output_content.get('details', tool_output_content['error'])}")
-        return FetchFilesOutput(files={}, error=str(tool_output_content.get('details', tool_output_content['error'])))
-    return FetchFilesOutput(**tool_output_content)
+@mcp_app.tool(name="fetchFiles")
+def fetch_files_mcp_tool(input: FetchFilesInput, context: Context) -> FetchFilesOutput:
+    """Fetches content of specified files from a GitHub repository and branch."""
+    context.info(f"[fetch_files_mcp_tool] Called for repo: {input.repo_name}, branch: {input.branch}, paths: {input.paths}")
+
+    repo = get_repo_client(input.repo_name)
+    if not repo:
+        err_msg = f"Failed to get GitHub repository: {input.repo_name}"
+        context.error(f"[fetch_files_mcp_tool] {err_msg}")
+        return FetchFilesOutput(files={}, error=err_msg)
+
+    results: Dict[str, str] = {}
+    errors: list[str] = []
+
+    for path in input.paths:
+        try:
+            file_content = repo.get_contents(path, ref=input.branch)
+            if isinstance(file_content.content, str):
+                 # Already decoded (e.g. if it's not base64 encoded)
+                content = file_content.content
+            elif file_content.encoding == "base64" and file_content.content:
+                content = base64.b64decode(file_content.content).decode("utf-8")
+            else: # No content or unknown encoding
+                content = "" # Or handle as error, TBD
+                errors.append(f"File '{path}' has no content or unknown encoding.")
+            results[path] = content
+            context.info(f"[fetch_files_mcp_tool] Fetched file: {path}")
+        except GithubException as e:
+            err_detail = f"Error fetching file '{path}': {e.status} - {e.data.get('message', str(e))}"
+            context.error(f"[fetch_files_mcp_tool] {err_detail}")
+            errors.append(err_detail)
+            results[path] = f"ERROR: {err_detail}" # Include error in content for partial success
+        except Exception as e: # Catch other unexpected errors
+            err_detail = f"Unexpected error fetching file '{path}': {str(e)}"
+            context.error(f"[fetch_files_mcp_tool] {err_detail}")
+            errors.append(err_detail)
+            results[path] = f"ERROR: {err_detail}"
+
+
+    if errors and not results: # Only errors, no files successfully fetched
+         return FetchFilesOutput(files={}, error="; ".join(errors))
+    elif errors: # Partial success
+        # Return files dictionary which includes error messages for failed files,
+        # and also an overall error message.
+        return FetchFilesOutput(files=results, error="Some files could not be fetched: " + "; ".join(errors))
+
+    return FetchFilesOutput(files=results)
 
 class GitCommitInput(BaseModel):
-    repo_name: str = Field(description="GitHub repository name (e.g., 'owner/repo')")
+    repo_name: str = Field(description="GitHub repository name, including owner (e.g., 'owner/repo')")
     branch: str = Field(description="Git branch to commit to (e.g., 'main', 'develop')")
     message: str = Field(description="The commit message.")
-    paths: Optional[List[str]] = Field(default=None, description="Optional list of specific file paths to add and commit. If None, commits all staged changes.")
+    path: str = Field(description="The full path to the file in the repository to create or update.")
+    content: str = Field(description="The new content of the file.")
 
 class GitCommitOutput(BaseModel):
     commit_url: Optional[str] = Field(default=None, description="URL of the new commit if successful.")
+    commit_sha: Optional[str] = Field(default=None, description="SHA of the new commit if successful.")
     status: str = Field(description="Status of the commit operation (e.g., 'success', 'failure').")
     error: Optional[str] = Field(default=None, description="Error message if the commit failed.")
 
 @mcp_app.tool(name="gitCommit")
-async def git_commit_mcp_tool(input: GitCommitInput, context: Context) -> GitCommitOutput:
-    """Commits changes to a specified GitHub repository and branch."""
-    await context.info(f"[git_commit_mcp_tool] Called for repo: {input.repo_name}, branch: {input.branch}")
-    api_args = input.model_dump()
-    if api_args.get("paths") is None: api_args.pop("paths", None) 
-    tool_output_content = await _execute_actual_github_api_call("/git/commit", api_args, "gitCommit")
-    if "error" in tool_output_content:
-        await context.error(f"[git_commit_mcp_tool] Error: {tool_output_content.get('details', tool_output_content['error'])}")
-        return GitCommitOutput(status="failure", error=str(tool_output_content.get('details', tool_output_content['error'])))
-    return GitCommitOutput(commit_url=tool_output_content.get("commit_url"), status=tool_output_content.get("status", "success"), **tool_output_content)
+def git_commit_mcp_tool(input: GitCommitInput, context: Context) -> GitCommitOutput:
+    """Creates or updates a file in a GitHub repository and commits the change."""
+    context.info(f"[git_commit_mcp_tool] Called for repo: {input.repo_name}, branch: {input.branch}, path: {input.path}")
+
+    repo = get_repo_client(input.repo_name)
+    if not repo:
+        err_msg = f"Failed to get GitHub repository: {input.repo_name}"
+        context.error(f"[git_commit_mcp_tool] {err_msg}")
+        return GitCommitOutput(status="failure", error=err_msg)
+
+    try:
+        # Check if file exists to decide between update or create
+        try:
+            existing_file = repo.get_contents(input.path, ref=input.branch)
+            commit_details = repo.update_file(
+                path=input.path,
+                message=input.message,
+                content=input.content,
+                sha=existing_file.sha,
+                branch=input.branch
+            )
+            context.info(f"[git_commit_mcp_tool] Updated file: {input.path}")
+        except GithubException as e:
+            if e.status == 404: # File not found, so create it
+                commit_details = repo.create_file(
+                    path=input.path,
+                    message=input.message,
+                    content=input.content,
+                    branch=input.branch
+                )
+                context.info(f"[git_commit_mcp_tool] Created new file: {input.path}")
+            else: # Other GitHub error during get_contents
+                raise e
+
+        commit_obj = commit_details['commit']
+
+        return GitCommitOutput(
+            commit_url=commit_obj.html_url,
+            commit_sha=commit_obj.sha,
+            status="success"
+        )
+
+    except GithubException as e:
+        err_detail = f"GitHub API error: {e.status} - {e.data.get('message', str(e))}"
+        context.error(f"[git_commit_mcp_tool] {err_detail}")
+        return GitCommitOutput(status="failure", error=err_detail)
+    except Exception as e:
+        err_detail = f"Unexpected error during commit: {str(e)}"
+        context.error(f"[git_commit_mcp_tool] {err_detail}")
+        return GitCommitOutput(status="failure", error=err_detail)
 
 class SandboxInitInput(BaseModel):
-    repo_name: str = Field(description="GitHub repository name (e.g., 'owner/repo')")
+    repo_name: str = Field(description="GitHub repository name, including owner (e.g., 'owner/repo')")
     mode: str = Field(description="Mode of operation: 'branch' or 'project'.")
     reuse_token: Optional[str] = Field(default=None); force_new: Optional[bool] = Field(default=False)
     branch: Optional[str] = Field(default=None); project_name: Optional[str] = Field(default=None)
@@ -122,16 +214,266 @@ class SandboxInitOutput(BaseModel):
     reuse_token: Optional[str] = Field(default=None); message: str
     error: Optional[str] = Field(default=None)
 
+# --- Helper functions for sandboxInit (project mode) ---
+# These are adapted from project/sample/main.py
+# Note: These are synchronous and will run in FastMCP's thread pool if the tool is sync.
+
+def copy_framework_baseline(source_repo, destination_repo, source_path, dest_path, destination_branch):
+    """Recursively copy files and folders from the source repo to the destination repo."""
+    # Assuming g (Github client) is globally available and configured
+    contents = source_repo.get_contents(source_path) # Removed ref=source_repo.default_branch, assuming source_path is absolute or relative to root
+    for item in contents:
+        if item.type == "dir":
+            new_dest_path = f"{dest_path}/{item.name}" if dest_path else item.name
+            copy_framework_baseline(source_repo, destination_repo, item.path, new_dest_path, destination_branch)
+        else:
+            try:
+                file_content_bytes = source_repo.get_contents(item.path).decoded_content
+                file_content = file_content_bytes.decode('utf-8')
+                # Adjusted destination_path to be relative to the root of the destination_repo
+                # The original logic for framework had "framework/" prefix, we might not want that here
+                # For now, let's assume dest_path is where it should go, or root if dest_path is empty
+                final_destination_path = f"{dest_path}/{item.name}" if dest_path else item.name
+
+                try:
+                    existing_file = destination_repo.get_contents(final_destination_path, ref=destination_branch)
+                    destination_repo.update_file(final_destination_path, f"Updated {item.name} from framework baseline", file_content, existing_file.sha, branch=destination_branch)
+                except GithubException as e:
+                    if e.status == 404: # Not found
+                        destination_repo.create_file(final_destination_path, f"Copied {item.name} from framework baseline", file_content, branch=destination_branch)
+                    else:
+                        raise
+            except UnicodeDecodeError:
+                print(f"⚠️ Skipping binary file during copy: {item.path}")
+            except Exception as e:
+                print(f"⚠️ Error copying file {item.path}: {str(e)}")
+
+
+def create_initial_project_files(project_repo, project_base_path, project_name, project_description, destination_branch):
+    from datetime import datetime # Ensure datetime is imported
+    starter_task_yaml = f"""tasks:
+  1.1_capture_project_goals:
+    description: Help capture and summarize the goals, purpose, and intended impact of the project.
+    phase: Phase 1 - Discovery
+    category: discovery
+    pod_owner: DeliveryPod
+    status: pending
+    prompt: prompts/used/{project_name}_capture_project_goals_prompt.txt
+    inputs: []
+    outputs:
+      - outputs/project_goals.md
+    ready: true
+    done: false
+    created_by: human
+    created_at: {datetime.utcnow().isoformat()}
+    updated_at: {datetime.utcnow().isoformat()}
+"""
+    starter_memory_yaml = f"""memory:
+  context:
+    project_name: {project_name}
+    project_description: {project_description}
+    created_at: {datetime.utcnow().isoformat()}
+"""
+    files_to_create = {
+        f"{project_base_path}/task.yaml": ("Initialize task.yaml", starter_task_yaml),
+        f"{project_base_path}/memory.yaml": ("Initialize memory.yaml", starter_memory_yaml),
+        f"{project_base_path}/outputs/.gitkeep": ("Initialize outputs folder", ""), # Ensure folder creation
+        f"{project_base_path}/prompts/.gitkeep": ("Initialize prompts folder", ""),
+        f"{project_base_path}/docs/.gitkeep": ("Initialize docs folder", ""),
+    }
+    for path, (message, content) in files_to_create.items():
+        try:
+            project_repo.create_file(path, message, content, branch=destination_branch)
+        except GithubException as e:
+            if e.status == 422 and "already exists" in e.data.get("message","").lower():
+                print(f"File {path} already exists, skipping creation.")
+            else:
+                print(f"Error creating file {path}: {str(e)}")
+
+
+def run_project_initialization_logic(project_name: str, dest_repo_name_full: str, project_description: str, dest_branch: str, context: Context):
+    # This function encapsulates the logic from project/sample/main.py's run_project_initialization
+    # It's made synchronous and uses the global 'g'
+    if not g:
+        context.error("GitHub client not initialized.")
+        raise Exception("GitHub client not initialized (GITHUB_TOKEN missing).")
+
+    try:
+        # Assuming a fixed source "framework" repo for the baseline
+        # This should be configurable or clearly defined. Using a placeholder for now.
+        FRAMEWORK_OWNER_REPO = "stewmckendry/ai-delivery-framework" # Example, make this configurable if needed
+
+        framework_repo = g.get_repo(FRAMEWORK_OWNER_REPO)
+        project_repo = get_repo_client(dest_repo_name_full) # Use the existing helper
+
+        if not project_repo:
+            raise Exception(f"Destination repository {dest_repo_name_full} not found or accessible.")
+
+        framework_source_path = "framework" # Path within the framework_repo to copy from
+        project_base_dest_path = "project"  # Base path in the destination project repo, e.g. "project/"
+
+        # 1. Validate framework source path exists (optional, get_contents will fail if not)
+        try:
+            framework_repo.get_contents(framework_source_path) # Check if path exists
+        except GithubException as e:
+            if e.status == 404:
+                raise Exception(f"Framework source path '{framework_source_path}' not found in {FRAMEWORK_OWNER_REPO}.")
+            raise
+
+        # 2. Copy framework files from framework_repo's "framework/" path to project_repo's root (or a subfolder)
+        # The original copy_framework_baseline copied to `framework/{dest_path}/{item.name}`.
+        # If we want the contents of `framework_source_path` to go to the root of `project_repo`, `dest_path_for_copy` should be empty.
+        # If they should go into e.g. "framework_files/" in project_repo, then "framework_files".
+        # For now, let's assume files from FRAMEWORK_OWNER_REPO/framework/* go to project_repo/* (root)
+        context.info(f"Copying framework baseline from {FRAMEWORK_OWNER_REPO}/{framework_source_path} to {dest_repo_name_full}@{dest_branch} root.")
+        copy_framework_baseline(framework_repo, project_repo, source_path=framework_source_path, dest_path="", destination_branch=dest_branch)
+
+        # 3. Create initial project-specific files (task.yaml, memory.yaml) under project_base_dest_path
+        context.info(f"Creating initial project files in {project_base_dest_path}/ for {project_name}.")
+        create_initial_project_files(project_repo, project_base_dest_path, project_name, project_description, destination_branch=dest_branch)
+
+        context.info(f"Project {project_name} initialized successfully in {dest_repo_name_full} on branch {dest_branch}.")
+
+    except GithubException as e:
+        err_msg = f"GitHub error during project initialization: {e.status} - {e.data.get('message', str(e))}"
+        context.error(err_msg)
+        raise Exception(err_msg) # Re-raise to be caught by the tool's error handler
+    except Exception as e:
+        err_msg = f"Unexpected error during project initialization: {str(e)}"
+        context.error(err_msg)
+        import traceback
+        traceback.print_exc()
+        raise Exception(err_msg)
+
+
 @mcp_app.tool(name="sandboxInit")
-async def sandbox_init_mcp_tool(input: SandboxInitInput, context: Context) -> SandboxInitOutput:
-    """Initializes a sandbox environment."""
-    await context.info(f"[sandbox_init_mcp_tool] Called for repo: {input.repo_name}, mode: {input.mode}")
-    api_args = input.model_dump(exclude_none=True) 
-    tool_output_content = await _execute_actual_github_api_call("/sandbox/init", api_args, "sandboxInit")
-    if "error" in tool_output_content:
-        await context.error(f"[sandbox_init_mcp_tool] Error: {tool_output_content.get('details', tool_output_content['error'])}")
-        return SandboxInitOutput(message="Initialization failed", error=str(tool_output_content.get('details', tool_output_content['error'])))
-    return SandboxInitOutput(**tool_output_content)
+def sandbox_init_mcp_tool(input: SandboxInitInput, context: Context) -> SandboxInitOutput:
+    """Initializes a sandbox environment: a new branch or a new project structure."""
+    context.info(f"[sandbox_init_mcp_tool] Called for repo: {input.repo_name}, mode: {input.mode}")
+
+    repo = get_repo_client(input.repo_name)
+    if not repo:
+        err_msg = f"Failed to get GitHub repository: {input.repo_name}"
+        context.error(f"[sandbox_init_mcp_tool] {err_msg}")
+        return SandboxInitOutput(message="Initialization failed", error=err_msg)
+
+    if input.mode == "branch":
+        try:
+            base_branch_name = "main" # Or repo.default_branch
+
+            # Try to get the default branch to ensure repo is valid and get its SHA
+            try:
+                default_branch_obj = repo.get_branch(base_branch_name)
+                base_sha = default_branch_obj.commit.sha
+            except GithubException as e:
+                 # Fallback if 'main' doesn't exist, try default_branch
+                try:
+                    default_branch_obj = repo.get_branch(repo.default_branch)
+                    base_branch_name = repo.default_branch
+                    base_sha = default_branch_obj.commit.sha
+                except GithubException as e_default:
+                    err_msg = f"Cannot find base branch ('main' or default) in {input.repo_name}: {e_default.data.get('message', str(e_default))}"
+                    context.error(f"[sandbox_init_mcp_tool] {err_msg}")
+                    return SandboxInitOutput(message="Initialization failed", error=err_msg)
+
+
+            new_branch_name = None
+            if input.reuse_token and not input.force_new:
+                try:
+                    decoded_token = base64.urlsafe_b64decode(input.reuse_token.encode()).decode()
+                    if decoded_token.startswith("sandbox-"):
+                        repo.get_branch(decoded_token) # Check if branch exists
+                        new_branch_name = decoded_token
+                        context.info(f"Reusing existing sandbox branch: {new_branch_name}")
+                except Exception: # Invalid token or branch doesn't exist
+                    context.info("Invalid or non-existent reuse_token, will create a new branch.")
+                    pass
+
+            if not new_branch_name: # Create new branch
+                # Simple unique name generation, similar to project/sample
+                adj = ["emerald", "cosmic", "velvet", "silent", "curious", "ruby", "azure", "golden"]
+                animals = ["hawk", "otter", "wave", "eagle", "fox", "lynx", "comet", "river"]
+
+                for _ in range(5): # Try a few times for a unique name
+                    candidate_branch = f"sandbox-{random.choice(adj)}-{random.choice(animals)}-{random.randint(100,999)}"
+                    try:
+                        repo.get_branch(candidate_branch) # Check if it exists
+                    except GithubException as e: # If it doesn't exist (404), then it's usable
+                        if e.status == 404:
+                            new_branch_name = candidate_branch
+                            break
+                        else: raise # Other error
+
+                if not new_branch_name: # Still couldn't find a unique name
+                    new_branch_name = f"sandbox-{base64.urlsafe_b64encode(os.urandom(6)).decode().rstrip('=')}" # Fallback
+
+                repo.create_git_ref(ref=f"refs/heads/{new_branch_name}", sha=base_sha)
+                context.info(f"Created new sandbox branch: {new_branch_name} from {base_branch_name} ({base_sha})")
+
+            current_reuse_token = base64.urlsafe_b64encode(new_branch_name.encode()).decode()
+            return SandboxInitOutput(
+                branch=new_branch_name,
+                repo_name=input.repo_name,
+                reuse_token=current_reuse_token,
+                message=f"Sandbox branch '{new_branch_name}' is ready in repo '{input.repo_name}'. Reuse token: {current_reuse_token}"
+            )
+        except GithubException as e:
+            err_detail = f"GitHub error during branch initialization: {e.status} - {e.data.get('message', str(e))}"
+            context.error(f"[sandbox_init_mcp_tool] {err_detail}")
+            return SandboxInitOutput(message="Branch initialization failed", error=err_detail)
+        except Exception as e:
+            err_detail = f"Unexpected error during branch initialization: {str(e)}"
+            context.error(f"[sandbox_init_mcp_tool] {err_detail}")
+            return SandboxInitOutput(message="Branch initialization failed", error=err_detail)
+
+    elif input.mode == "project":
+        if not input.branch or not input.project_name: # Description is optional
+            err_msg = "For project mode, 'branch' and 'project_name' are required."
+            context.error(f"[sandbox_init_mcp_tool] {err_msg}")
+            return SandboxInitOutput(message="Initialization failed", error=err_msg)
+        try:
+            # Ensure the target branch for the project exists, or create it if not.
+            # The project init logic expects the branch to exist.
+            try:
+                repo.get_branch(input.branch)
+                context.info(f"Target branch '{input.branch}' for project init already exists.")
+            except GithubException as e:
+                if e.status == 404: # Branch not found, create it from default branch
+                    try:
+                        default_branch_sha = repo.get_branch(repo.default_branch).commit.sha
+                        repo.create_git_ref(ref=f"refs/heads/{input.branch}", sha=default_branch_sha)
+                        context.info(f"Created target branch '{input.branch}' for project initialization.")
+                    except GithubException as ce:
+                        err_msg = f"Failed to create target branch '{input.branch}': {ce.data.get('message', str(ce))}"
+                        context.error(f"[sandbox_init_mcp_tool] {err_msg}")
+                        return SandboxInitOutput(message="Initialization failed", error=err_msg)
+                else: # Other error checking branch
+                    raise
+
+            # Run the synchronous project initialization logic
+            run_project_initialization_logic(
+                project_name=input.project_name,
+                dest_repo_name_full=input.repo_name,
+                project_description=input.project_description or f"Project {input.project_name}",
+                dest_branch=input.branch,
+                context=context
+            )
+            # reuse_token is not typically part of project init, more for branch persistence
+            return SandboxInitOutput(
+                branch=input.branch,
+                repo_name=input.repo_name,
+                project_name=input.project_name,
+                message=f"Project '{input.project_name}' initialized in repo '{input.repo_name}' on branch '{input.branch}'."
+            )
+        except Exception as e: # Catch errors from run_project_initialization_logic or branch creation
+            err_detail = f"Project initialization failed: {str(e)}"
+            context.error(f"[sandbox_init_mcp_tool] {err_detail}")
+            return SandboxInitOutput(message="Project initialization failed", error=err_detail)
+    else:
+        err_msg = f"Unsupported mode for sandboxInit: {input.mode}"
+        context.error(f"[sandbox_init_mcp_tool] {err_msg}")
+        return SandboxInitOutput(message="Initialization failed", error=err_msg)
+
 
 def _recursive_convert_gemini_struct_to_dict(value: Any) -> Any:
     if isinstance(value, ProtoStruct): # Handle top-level Struct (like fc.args) or nested Structs
@@ -154,61 +496,59 @@ def _recursive_convert_gemini_struct_to_dict(value: Any) -> Any:
         return [_recursive_convert_gemini_struct_to_dict(v) for v in value]
     return value # Primitives (str, int, float, bool, None already handled by ProtoValue)
 
-def _resolve_refs_and_simplify(schema_node: Any, definitions: Dict[str, Any], tool_name: str) -> Any:
-    if isinstance(schema_node, list): return [_resolve_refs_and_simplify(item, definitions, tool_name) for item in schema_node]
-    if not isinstance(schema_node, dict): return schema_node
-    node_copy = schema_node.copy()
-    if '$ref' in node_copy:
-        ref_path = node_copy['$ref']; def_key = ref_path.split('/')[-1]
-        if def_key in definitions:
-            resolved_def = _resolve_refs_and_simplify(definitions[def_key], definitions, tool_name)
-            merged_def = {**resolved_def} 
-            for k, v_ref_node in node_copy.items():
-                if k != '$ref' and k not in merged_def: merged_def[k] = v_ref_node
-            return merged_def
-        else: return {"type": "string", "description": f"Unresolved reference: {ref_path}"}
-    if 'anyOf' in node_copy:
-        primary_type_schema = next((opt for opt in node_copy['anyOf'] if isinstance(opt, dict) and opt.get('type') != 'null'), None)
-        if primary_type_schema:
-            new_node = primary_type_schema.copy()
-            for key, value in node_copy.items():
-                if key not in ['anyOf', 'type'] and key not in new_node : new_node[key] = value
-            return _resolve_refs_and_simplify(new_node, definitions, tool_name)
-        else: return {"type": "string", "description": "Simplified anyOf field"}
-    processed_node = {}
-    for key, value in node_copy.items():
-        if key in ['$defs', 'definitions', 'title', 'default']: continue 
-        processed_node[key] = _resolve_refs_and_simplify(value, definitions, tool_name)
-    return processed_node
-
 async def get_gemini_tools_from_fastmcp(mcp_server: FastMCP) -> List[GeminiSdkTool]:
     gemini_function_declarations = []
     try:
-        mcp_tools = await mcp_server.list_tools() 
-        if not mcp_tools: return []
-        for mcp_tool in mcp_tools: 
-            tool_name = mcp_tool.name; tool_description = mcp_tool.description or ""
-            original_schema = copy.deepcopy(mcp_tool.inputSchema) 
-            definitions = original_schema.pop('$defs', original_schema.pop('definitions', {}))
-            if 'title' in original_schema: del original_schema['title']
-            if 'default' in original_schema: del original_schema['default']
-            final_parameters = _resolve_refs_and_simplify(original_schema, definitions, tool_name)
-            if not (isinstance(final_parameters, dict) and final_parameters.get("type") == "object"):
-                final_parameters = {"type": "object", "properties": {}, "required": []}
-            if "properties" not in final_parameters: final_parameters["properties"] = {}
-            if "required" not in final_parameters: final_parameters["required"] = []
-            elif not isinstance(final_parameters["required"], list): final_parameters["required"] = []
+        mcp_tools = await mcp_server.list_tools()
+        if not mcp_tools:
+            print("[get_gemini_tools_from_fastmcp] No MCP tools found.")
+            return []
+
+        for mcp_tool in mcp_tools:
+            tool_name = mcp_tool.name
+            tool_description = mcp_tool.description or f"Tool: {tool_name}"
             
+            # Directly use the inputSchema generated by Pydantic via FastMCP
+            # It should already be in the correct format (OpenAPI 3.0 JSON Schema)
+            parameters_schema = copy.deepcopy(mcp_tool.inputSchema)
+
+            # Ensure the schema is a dictionary and has a 'type' of 'object'.
+            # Pydantic models for tool inputs should naturally produce this.
+            if not isinstance(parameters_schema, dict) or parameters_schema.get("type") != "object":
+                print(f"[get_gemini_tools_from_fastmcp] Warning: Schema for tool '{tool_name}' is not a direct object schema. Attempting to wrap.")
+                # This case should ideally not happen if Pydantic models are used correctly for input.
+                # If it's a simple type or something else, Gemini might not accept it directly.
+                # Forcing it into an object structure might be incorrect.
+                # However, Gemini expects a JSON schema object for parameters.
+                # If inputSchema is None or not an object, we might need a default.
+                parameters_schema = {"type": "object", "properties": {}} # Minimal valid schema
+
+            # Remove 'title' from the top level of the schema if present, as Gemini uses tool name/description
+            if 'title' in parameters_schema:
+                del parameters_schema['title']
+
             print(f"--- [get_gemini_tools_from_fastmcp] Preparing tool for Gemini: {tool_name} ---")
             print(f"Description: {tool_description}")
-            print(f"Parameters (final for Gemini): {json.dumps(final_parameters, indent=2)}")
-            function_declaration = FunctionDeclaration(name=tool_name, description=tool_description, parameters=final_parameters)
+            print(f"Parameters (from mcp_tool.inputSchema): {json.dumps(parameters_schema, indent=2)}")
+
+            function_declaration = FunctionDeclaration(
+                name=tool_name,
+                description=tool_description,
+                parameters=parameters_schema
+            )
             gemini_function_declarations.append(function_declaration)
+
     except Exception as e:
-        print(f"[get_gemini_tools_from_fastmcp] Error: {e}"); import traceback; traceback.print_exc()
-        return [] 
-    if gemini_function_declarations: return [GeminiSdkTool(function_declarations=gemini_function_declarations)]
-    return []
+        print(f"[get_gemini_tools_from_fastmcp] Error processing MCP tools: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+    if gemini_function_declarations:
+        return [GeminiSdkTool(function_declarations=gemini_function_declarations)]
+    else:
+        print("[get_gemini_tools_from_fastmcp] No function declarations were generated.")
+        return []
 
 GEMINI_TOOLS_FOR_SDK: List[GeminiSdkTool] = [] 
 
