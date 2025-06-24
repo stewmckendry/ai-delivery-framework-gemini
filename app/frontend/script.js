@@ -69,6 +69,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const chatWindow = document.getElementById('chat-window');
     const userInput = document.getElementById('user-input');
     const sendButton = document.getElementById('send-button');
+    const previewButton = document.getElementById('preview-button');
+    const repoInput = document.getElementById('repo-name');
+    const branchInput = document.getElementById('branch-name');
+    const filePathInput = document.getElementById('file-path');
+    const fileContentInput = document.getElementById('file-content');
 
     // For local development, the backend runs on http://localhost:8000
     // For production, this URL will need to be the deployed backend URL.
@@ -79,6 +84,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 
+
+    function escapeHtml(str) {
+        return str.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    }
 
     async function sendMessage() {
         const messageText = userInput.value.trim();
@@ -163,6 +172,62 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             sendButton.disabled = false;
             appendMessage(`Network or application error: ${error.message}`, 'model');
+        }    
+    }
+
+    async function previewDiff() {
+        const repoName = repoInput.value.trim();
+        const branchName = branchInput.value.trim();
+        const filePath = filePathInput.value.trim();
+        const content = fileContentInput.value;
+
+        if (!repoName || !branchName || !filePath) {
+            appendMessage('Error: repo, branch, and file path are required.', 'model');
+            return;
+        }
+
+        appendMessage('<i>Generating diff...</i>', 'model');
+        const diffIndicator = chatWindow.lastChild;
+        previewButton.disabled = true;
+
+        try {
+            const payload = {
+                repo_name: repoName,
+                branch: branchName,
+                files: [{ path: filePath, content: content }]
+            };
+            const response = await fetch('/mcp/previewChanges', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (diffIndicator && diffIndicator.parentNode === chatWindow) {
+                chatWindow.removeChild(diffIndicator);
+            }
+            previewButton.disabled = false;
+
+            if (!response.ok) {
+                const errText = await response.text();
+                appendMessage(`Error: ${errText}`, 'model');
+                return;
+            }
+
+            const data = await response.json();
+            if (data.status !== 'success') {
+                appendMessage(`Error: ${data.error || 'Unknown error'}`, 'model');
+                return;
+            }
+
+            const diffText = data.diff_text || 'No diff returned.';
+            appendMessage(`<pre class="diff-block">${escapeHtml(diffText)}</pre>`, 'model');
+
+        } catch (e) {
+            if (diffIndicator && diffIndicator.parentNode === chatWindow) {
+                chatWindow.removeChild(diffIndicator);
+            }
+            previewButton.disabled = false;
+            appendMessage(`Error generating diff: ${e.message}`, 'model');
         }
     }
 
@@ -172,6 +237,10 @@ document.addEventListener('DOMContentLoaded', () => {
             sendMessage();
         }
     });
+
+    if (previewButton) {
+        previewButton.addEventListener('click', previewDiff);
+    }
 
     // Optional: Initial greeting from the "model" (frontend only)
     // const initialGreetingText = "Hello! I'm ProductPod (MCP Enabled). How can I help you today?";

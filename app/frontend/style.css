@@ -108,3 +108,32 @@ h1 {
 .tool-table th {
     background-color: #f0f0f0;
 }
+#diff-area {
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    gap: 5px;
+    border-top: 1px solid #ddd;
+}
+
+#diff-area input,
+#diff-area textarea {
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+#diff-area textarea {
+    height: 100px;
+    resize: vertical;
+}
+
+.diff-block {
+    background-color: #f6f8fa;
+    padding: 10px;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-family: monospace;
+    white-space: pre;
+}
