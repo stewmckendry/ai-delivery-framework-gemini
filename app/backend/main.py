@@ -16,9 +16,13 @@ from google.protobuf.struct_pb2 import Value as ProtoValue, Struct as ProtoStruc
 
 from pydantic import BaseModel # For tool_output.model_dump if needed by Gemini response
 
-from mcp.server.fastmcp import FastMCP, Context
-from mcp.shared.context import RequestContext # For fake_req_ctx
-from mcp.types import RequestId # For fake_req_ctx
+from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.shared.context import Context, RequestContext
+except ImportError:  # Backwards compatibility
+    from mcp.server.fastmcp import Context  # type: ignore
+    from mcp.shared.context import RequestContext
+from mcp.types import RequestId, RequestParams
 
 # Import tools and Pydantic models from the new github_tools.py
 # Note: Pydantic models are defined in github_tools.py and used by the tools there.
@@ -218,14 +222,22 @@ async def gemini_chat_proxy_mcp(request: Request):
                                  print(f"Warning: Tool {tool_name} received args but has no input model. Args ignored: {actual_tool_args_for_pydantic}")
                                                         
                             # Prepare context for the tool call, injecting user-specific tokens
-                            current_request_context_dict = {
-                                "client_id": "gemini_chat_proxy",
-                                "request_id": RequestId.new(),
-                                "user_github_token": github_token,
-                                "product_pod_user_id": product_user_id
-                            }
-
-                            fake_req_ctx = RequestContext(**current_request_context_dict)
+                            session_obj = type(
+                                "Session",
+                                (),
+                                {
+                                    "user_github_token": github_token,
+                                    "product_pod_user_id": product_user_id,
+                                    "send_progress_notification": lambda *a, **k: None,
+                                },
+                            )()
+                            meta = RequestParams.Meta(client_id="gemini_chat_proxy")
+                            fake_req_ctx = RequestContext(
+                                request_id=RequestId.new(),
+                                meta=meta,
+                                session=session_obj,
+                                lifespan_context=None,
+                            )
                             # Ensure mcp_app._tool_manager is valid if used, or pass None
                             tool_manager_for_ctx = mcp_app._tool_manager if hasattr(mcp_app, '_tool_manager') else None
                             minimal_ctx = Context(request_context=fake_req_ctx, tool_manager=tool_manager_for_ctx)
