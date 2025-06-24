@@ -73,3 +73,15 @@
   - flow
   last_updated: '2025-06-24'
   pod_owner: DeliveryPod
+- path: task_guides/task_004_sandbox_ui.md
+  raw_url: https://raw.githubusercontent.com/stewmckendry/ai-delivery-framework-gemini/main/task_guides/task_004_sandbox_ui.md
+  file_type: md
+  description: Guide for implementing UI support for managing sandbox environments,
+    enabling users to initialize and switch between sandboxes using a frontend interface.
+  tags:
+  - UI
+  - sandbox
+  - flow
+  - integration
+  last_updated: '2025-06-24'
+  pod_owner: DeliveryPod
